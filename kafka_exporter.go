@@ -341,8 +341,13 @@ func (e *Exporter) indexHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Exporter) basicAuth(next http.HandlerFunc) http.HandlerFunc {
+<<<<<<< HEAD
 	defaultUser := "usename_t"
 	defaultPwd := "password_t"
+=======
+	defaultUser := "mokey"
+	defaultPwd := "w7SiYs$oE"
+>>>>>>> 27c000b07007d6bd4a6937cfdbc6015f63c0abc4
 	return func(w http.ResponseWriter, r *http.Request) {
 		username, password, ok := r.BasicAuth()
 		if ok {
