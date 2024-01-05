@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/sha256"
+	"crypto/subtle"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -312,6 +314,54 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- consumergroupLag
 	ch <- consumergroupLagZookeeper
 	ch <- consumergroupLagSum
+}
+//basic auth
+func (e *Exporter) metricHandler(w http.ResponseWriter, r *http.Request) {
+	promhttp.Handler().ServeHTTP(w, r)
+}
+
+func (e *Exporter) healthHandler(w http.ResponseWriter, r *http.Request) {
+	_, err := w.Write([]byte("ok"))
+		if err != nil {
+			klog.Error("Error handle /healthz request", err)
+		}
+}
+
+func (e *Exporter) indexHandler(w http.ResponseWriter, r *http.Request) {
+	_, err := w.Write([]byte(`<html>
+				<head><title>Kafka Exporter</title></head>
+				<body>
+				<h1>Kafka Exporter</h1>
+				<p><a href='` + `/metrics` + `'>Metrics</a></p>
+				</body>
+				</html>`))
+			if err != nil {
+				klog.Error("Error handle / request", err)
+			}
+}
+
+func (e *Exporter) basicAuth(next http.HandlerFunc) http.HandlerFunc {
+	defaultUser := "usename_t"
+	defaultPwd := "password_t"
+	return func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if ok {
+				usernameHash := sha256.Sum256([]byte(username))
+				passwordHash := sha256.Sum256([]byte(password))
+				defaultUserHash := sha256.Sum256([]byte(defaultUser))
+				defaultPwdHash := sha256.Sum256([]byte(defaultPwd))
+
+				usrMatch := subtle.ConstantTimeCompare(usernameHash[:], defaultUserHash[:]) == 1
+				pwdMatch := subtle.ConstantTimeCompare(passwordHash[:], defaultPwdHash[:]) ==1
+
+				if usrMatch && pwdMatch {
+					next.ServeHTTP(w, r)
+					return
+				}
+		}
+		w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	}
 }
 
 // Collect fetches the stats from configured Kafka location and delivers them
@@ -903,26 +953,9 @@ func setup(
 	defer exporter.client.Close()
 	prometheus.MustRegister(exporter)
 
-	http.Handle(metricsPath, promhttp.Handler())
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		_, err := w.Write([]byte(`<html>
-	        <head><title>Kafka Exporter</title></head>
-	        <body>
-	        <h1>Kafka Exporter</h1>
-	        <p><a href='` + metricsPath + `'>Metrics</a></p>
-	        </body>
-	        </html>`))
-		if err != nil {
-			klog.Error("Error handle / request", err)
-		}
-	})
-	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		// need more specific sarama check
-		_, err := w.Write([]byte("ok"))
-		if err != nil {
-			klog.Error("Error handle /healthz request", err)
-		}
-	})
+	http.HandleFunc("/metrics", exporter.basicAuth(exporter.metricHandler))
+	http.HandleFunc("/", exporter.basicAuth(exporter.indexHandler))
+	http.HandleFunc("/healthz", exporter.basicAuth(exporter.healthHandler))
 
 	if opts.serverUseTLS {
 		klog.V(INFO).Infoln("Listening on HTTPS", listenAddress)
